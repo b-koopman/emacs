@@ -42,13 +42,22 @@
   (add-hook 'tree-sitter-after-on-hook #'tree-sitter-hl-mode))
 
 (use-package tree-sitter-langs
-  :after tree-sitter)
+  :after tree-sitter
+  :config
+  ;; Ensure grammars are installed
+  (unless (file-directory-p tree-sitter-langs-grammar-dir)
+    (message "Installing tree-sitter language grammars...")
+    (tree-sitter-langs-install-grammars)))
 
 ;; Python mode with tree-sitter
 (use-package python
   :ensure nil
   :mode ("\\.py\\'" . python-mode)
-  :hook (python-mode . tree-sitter-mode)
+  :hook (python-mode . (lambda ()
+                        ;; Only enable tree-sitter if grammar is available
+                        (ignore-errors
+                          (require 'tree-sitter-langs)
+                          (tree-sitter-mode))))
   :config
   (setq python-indent-offset 4)
   
@@ -76,40 +85,30 @@
 ;; Eglot - Modern LSP client (built-in from Emacs 29)
 (use-package eglot
   :ensure nil
-  :commands (eglot eglot-ensure)
+  :hook (python-mode . eglot-ensure)
   :config
   ;; Try multiple Python LSP servers in order of preference
   ;; Pyright (most feature-rich), pylsp (good alternative), jedi-language-server (lightweight)
   (setq eglot-server-programs
-        (assoc-delete-all 'python-mode eglot-server-programs))
+        (assq-delete-all 'python-mode eglot-server-programs))
   
-  (add-to-list 'eglot-server-programs
-               '(python-mode . ,(cond
-                                 ((executable-find "pyright-langserver")
-                                  '("pyright-langserver" "--stdio"))
-                                 ((executable-find "pylsp")
-                                  '("pylsp"))
-                                 ((executable-find "jedi-language-server")
-                                  '("jedi-language-server"))
-                                 (t
-                                  (message "No Python LSP server found. Install: npm install -g pyright OR pip install python-lsp-server")
-                                  nil))))
+  (cond
+   ((executable-find "pyright-langserver")
+    (add-to-list 'eglot-server-programs
+                 '(python-mode "pyright-langserver" "--stdio")))
+   ((executable-find "pylsp")
+    (add-to-list 'eglot-server-programs
+                 '(python-mode "pylsp")))
+   ((executable-find "jedi-language-server")
+    (add-to-list 'eglot-server-programs
+                 '(python-mode "jedi-language-server")))
+   (t
+    (message "No Python LSP server found. Install: npm install -g pyright OR pip install python-lsp-server")))
   
   ;; Performance tuning
   (setq eglot-events-buffer-size 0)
   (setq eglot-sync-connect nil)
   (setq eglot-autoshutdown t)
-  
-  ;; Only enable eglot if an LSP server is available
-  (defun my/eglot-ensure-with-check ()
-    "Enable eglot only if a Python LSP server is available."
-    (when (and (derived-mode-p 'python-mode)
-               (or (executable-find "pyright-langserver")
-                   (executable-find "pylsp")
-                   (executable-find "jedi-language-server")))
-      (eglot-ensure)))
-  
-  (add-hook 'python-mode-hook #'my/eglot-ensure-with-check)
   
   ;; Keybindings for common LSP operations
   (with-eval-after-load 'eglot
@@ -129,7 +128,9 @@
 (use-package flycheck
   :hook (prog-mode . flycheck-mode)
   :config
-  (setq flycheck-check-syntax-automatically '(save mode-enabled))
+  (setq flycheck-check-syntax-automatically '(save idle-change mode-enabled))
+  (setq flycheck-idle-change-delay 0.5)
+  (setq flycheck-display-errors-delay 0.3)
   
   ;; Define custom Ruff checker
   (flycheck-define-checker python-ruff
@@ -155,7 +156,28 @@
   ;; Use Ruff as the primary checker for Python
   (add-hook 'python-mode-hook
             (lambda ()
-              (setq flycheck-checker 'python-ruff))))
+              (setq flycheck-checker 'python-ruff)
+              (flycheck-mode 1)))
+  
+  ;; Keybindings for flycheck
+  (define-key flycheck-mode-map (kbd "C-c ! n") 'flycheck-next-error)
+  (define-key flycheck-mode-map (kbd "C-c ! p") 'flycheck-previous-error)
+  (define-key flycheck-mode-map (kbd "C-c ! l") 'flycheck-list-errors)
+  (define-key flycheck-mode-map (kbd "C-c ! v") 'flycheck-verify-setup))
+
+;; Flycheck inline error display
+(use-package flycheck-inline
+  :after flycheck
+  :hook (flycheck-mode . flycheck-inline-mode)
+  :config
+  (setq flycheck-inline-display-function
+        (lambda (msg pos)
+          (let* ((ov (make-overlay pos pos))
+                 (str (propertize (concat " ← " msg)
+                                  'face 'flycheck-inline-error)))
+            (overlay-put ov 'after-string str)
+            (overlay-put ov 'flycheck-inline t)
+            ov))))
 
 ;; Format buffer with ruff on save
 (use-package reformatter
@@ -191,29 +213,10 @@
   :config
   (which-key-mode))
 
-;; Magit for git integration
-(use-package magit
-  :bind ("C-x g" . magit-status))
-
-;; Modern UI improvements
-(use-package vertico
-  :init
-  (vertico-mode))
-
-(use-package marginalia
-  :init
-  (marginalia-mode))
-
-(use-package consult
-  :bind (("C-s" . consult-line)
-         ("C-x b" . consult-buffer)))
-
 ;; Rainbow delimiters for better readability
 (use-package rainbow-delimiters
   :hook (prog-mode . rainbow-delimiters-mode))
 
-;; Highlight current line
-(global-hl-line-mode 1)
 
 ;; Show line numbers in programming modes
 (add-hook 'prog-mode-hook 'display-line-numbers-mode)
